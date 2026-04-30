@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 from googleapiclient.errors import HttpError
 
+from mcp.types import ToolAnnotations
+
 # Auth & server utilities
 from auth.google_auth import get_authenticated_google_service
 from auth.scopes import CHAT_MEMBERSHIPS_READONLY_SCOPE, CONTACTS_READONLY_SCOPE
@@ -253,7 +255,15 @@ def _extract_rich_links(msg: dict) -> List[str]:
     return urls
 
 
-@server.tool()
+@server.tool(
+    title="List Spaces",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("chat", "chat_spaces_readonly")
 @handle_http_errors("list_spaces", service_type="chat")
 async def list_spaces(
@@ -331,7 +341,15 @@ async def list_spaces(
     return "\n".join(output)
 
 
-@server.tool()
+@server.tool(
+    title="Get Messages",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_multiple_services(
     [
         {"service_type": "chat", "scopes": "chat_read", "param_name": "chat_service"},
@@ -386,17 +404,17 @@ async def get_messages(
     if not messages:
         return f"No messages found in space '{space_name}' (ID: {space_id})."
 
-    # Pre-resolve unique senders in parallel
+    # Pre-resolve unique senders sequentially. The underlying googleapiclient/httplib2
+    # service objects are not safe to fan out across worker threads.
     sender_lookup = {}
     for msg in messages:
         s = msg.get("sender", {})
         key = s.get("name", "")
         if key and key not in sender_lookup:
             sender_lookup[key] = s
-    resolved_names = await asyncio.gather(
-        *[_resolve_sender(people_service, s) for s in sender_lookup.values()]
-    )
-    sender_map = dict(zip(sender_lookup.keys(), resolved_names))
+    sender_map = {}
+    for key, sender_obj in sender_lookup.items():
+        sender_map[key] = await _resolve_sender(people_service, sender_obj)
 
     output = [f"Messages from '{space_name}' (ID: {space_id}):\n"]
     for msg in messages:
@@ -447,7 +465,15 @@ async def get_messages(
     return "\n".join(output)
 
 
-@server.tool()
+@server.tool(
+    title="Send Message",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("chat", "chat_write")
 @handle_http_errors("send_message", service_type="chat")
 async def send_message(
@@ -496,7 +522,15 @@ async def send_message(
     return msg
 
 
-@server.tool()
+@server.tool(
+    title="Search Messages",
+    annotations=ToolAnnotations(
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    ),
+)
 @require_multiple_services(
     [
         {"service_type": "chat", "scopes": "chat_read", "param_name": "chat_service"},
@@ -675,7 +709,15 @@ async def search_messages(
     return "\n".join(output)
 
 
-@server.tool()
+@server.tool(
+    title="Create Reaction",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 @require_google_service("chat", "chat_write")
 @handle_http_errors("create_reaction", service_type="chat")
 async def create_reaction(
@@ -711,7 +753,15 @@ async def create_reaction(
     return f"Reacted with {emoji_unicode} on message {message_id}. Reaction ID: {reaction_name}"
 
 
-@server.tool()
+@server.tool(
+    title="Download Chat Attachment",
+    annotations=ToolAnnotations(
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
 @handle_http_errors("download_chat_attachment", is_read_only=True, service_type="chat")
 @require_google_service("chat", "chat_read")
 async def download_chat_attachment(
