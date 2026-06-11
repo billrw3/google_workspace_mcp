@@ -168,17 +168,30 @@ def save_credentials_to_session(session_id: str, credentials: Credentials):
 
     if user_email:
         store = get_oauth21_session_store()
-        store.store_session(
-            user_email=user_email,
-            access_token=credentials.token,
-            refresh_token=credentials.refresh_token,
-            token_uri=credentials.token_uri,
-            client_id=credentials.client_id,
-            client_secret=credentials.client_secret,
-            scopes=credentials.scopes,
-            expiry=credentials.expiry,
-            mcp_session_id=session_id,
-        )
+        try:
+            store.store_session(
+                user_email=user_email,
+                access_token=credentials.token,
+                refresh_token=credentials.refresh_token,
+                token_uri=credentials.token_uri,
+                client_id=credentials.client_id,
+                client_secret=credentials.client_secret,
+                scopes=credentials.scopes,
+                expiry=credentials.expiry,
+                mcp_session_id=session_id,
+            )
+        except ValueError as bind_error:
+            # Single MCP session legitimately serves multiple Google accounts in
+            # single-user stdio mode. The OAuth 2.1 session store refuses to
+            # rebind, but disk persistence has already happened upstream, so the
+            # in-memory session-store update is purely a nice-to-have here.
+            if "already bound" in str(bind_error):
+                logger.debug(
+                    f"save_credentials_to_session: session {session_id} bound to a different user; "
+                    f"skipping session-store update for {user_email} (disk credentials already persisted)."
+                )
+            else:
+                raise
         logger.debug(
             f"Credentials saved to OAuth21SessionStore for session_id: {session_id}, user: {user_email}"
         )
@@ -965,18 +978,30 @@ def get_credentials(
                                     return None
 
                                 if persist_succeeded or is_stateless_mode():
-                                    store.store_session(
-                                        user_email=user_email,
-                                        access_token=credentials.token,
-                                        refresh_token=credentials.refresh_token,
-                                        token_uri=credentials.token_uri,
-                                        client_id=credentials.client_id,
-                                        client_secret=credentials.client_secret,
-                                        scopes=credentials.scopes,
-                                        expiry=credentials.expiry,
-                                        mcp_session_id=session_id,
-                                        issuer="https://accounts.google.com",
-                                    )
+                                    try:
+                                        store.store_session(
+                                            user_email=user_email,
+                                            access_token=credentials.token,
+                                            refresh_token=credentials.refresh_token,
+                                            token_uri=credentials.token_uri,
+                                            client_id=credentials.client_id,
+                                            client_secret=credentials.client_secret,
+                                            scopes=credentials.scopes,
+                                            expiry=credentials.expiry,
+                                            mcp_session_id=session_id,
+                                            issuer="https://accounts.google.com",
+                                        )
+                                    except ValueError as bind_error:
+                                        # See note in the file-store refresh path
+                                        # below: single-user stdio mode can have
+                                        # one MCP session serving multiple emails.
+                                        if "already bound" in str(bind_error):
+                                            logger.debug(
+                                                f"[get_credentials] OAuth 2.1 session {session_id} bound to a different user; "
+                                                f"skipping session-store update for {user_email} (disk credentials persisted)."
+                                            )
+                                        else:
+                                            raise
                         except Exception as e:
                             logger.error(
                                 f"[get_credentials] Failed to refresh OAuth 2.1 credentials: {e}"
@@ -1142,18 +1167,31 @@ def get_credentials(
                 if persist_succeeded or is_stateless_mode():
                     # Also update OAuth21SessionStore
                     store = get_oauth21_session_store()
-                    store.store_session(
-                        user_email=user_google_email,
-                        access_token=credentials.token,
-                        refresh_token=credentials.refresh_token,
-                        token_uri=credentials.token_uri,
-                        client_id=credentials.client_id,
-                        client_secret=credentials.client_secret,
-                        scopes=credentials.scopes,
-                        expiry=credentials.expiry,
-                        mcp_session_id=session_id,
-                        issuer="https://accounts.google.com",  # Add issuer for Google tokens
-                    )
+                    try:
+                        store.store_session(
+                            user_email=user_google_email,
+                            access_token=credentials.token,
+                            refresh_token=credentials.refresh_token,
+                            token_uri=credentials.token_uri,
+                            client_id=credentials.client_id,
+                            client_secret=credentials.client_secret,
+                            scopes=credentials.scopes,
+                            expiry=credentials.expiry,
+                            mcp_session_id=session_id,
+                            issuer="https://accounts.google.com",  # Add issuer for Google tokens
+                        )
+                    except ValueError as bind_error:
+                        # Single MCP session legitimately serves multiple Google
+                        # accounts in single-user stdio mode. The OAuth 2.1 session
+                        # store refuses to rebind, but the credentials are already
+                        # safely persisted to disk above, so we can ignore this.
+                        if "already bound" in str(bind_error):
+                            logger.debug(
+                                f"[get_credentials] OAuth 2.1 session {session_id} bound to a different user; "
+                                f"skipping session-store update for {user_google_email} (disk credentials persisted)."
+                            )
+                        else:
+                            raise
 
             if session_id and (persist_succeeded or is_stateless_mode()):
                 # Update session cache if it was the source or is active
